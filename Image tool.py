@@ -145,9 +145,8 @@ def _recursive_bg_removal(img_rgb, img_rgba, bg_color, tolerance):
                     break
             
             if is_edge:
-                # Fade the alpha channel of this edge pixel slightly
-                # This helps smooth the transition and removes lingering halo pixels
-                alpha_data[y, x] *= 0.95 # Reduce opacity slightly (adjust this factor if needed)
+                # *** FIX: Increased opacity reduction for stronger halo removal ***
+                alpha_data[y, x] *= 0.85 # Reduce opacity to 85% for a stronger removal effect
                 
     # Reintegrate the refined alpha channel
     img_rgba.putalpha(Image.fromarray(alpha_data.astype(np.uint8)))
