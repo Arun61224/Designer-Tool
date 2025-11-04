@@ -144,7 +144,7 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
         pixels_mask = protected_area_mask.load()
         
         # Use a small tolerance (e.g., 20) for color matching
-        PROTECTION_TOLERANCE = 35 # Increased tolerance for better detection
+        PROTECTION_TOLERANCE = 25 # Reduced tolerance for more precise print detection
         
         for x in range(width):
             for y in range(height):
