@@ -37,12 +37,25 @@ def find_bounding_box(img_rgba):
 def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width, new_height, occupancy_percent, skip_bg_removal):
     """
     Background Remover and Canvas Processor logic (from background_remover.py)
+    
+    FIX: Skips color-based background removal if the uploaded file is a PNG,
+    as it assumes the PNG is already correctly masked (transparent background).
     """
-    img_rgb = Image.open(image_file).convert("RGB")
-    img_rgba = img_rgb.convert("RGBA")
+    
+    # 1. Load image and determine if it's a PNG
+    img = Image.open(image_file)
+    is_png = img.format == 'PNG'
+    
+    # Convert to RGBA for consistency (retains transparency if PNG)
+    img_rgba = img.convert("RGBA")
     
     # 1. Conditional Background Processing (Make Transparent)
-    if not skip_bg_removal:
+    # Skip color-based removal if it's already a PNG OR if the user explicitly asked to skip.
+    # Note: If it's a PNG, we rely on the alpha channel and skip the manual color-distance removal.
+    should_run_bg_removal = not is_png and not skip_bg_removal
+    
+    if should_run_bg_removal:
+        img_rgb = img.convert("RGB")
         pixels_rgba = img_rgba.load()
         try:
             # Assume top-left corner is the background color
@@ -58,13 +71,14 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
                     pixels_rgba[x, y] = (0, 0, 0, 0) 
 
     # 2. Calculate Object Surface Area / Bounding Box (BBOX)
+    # This step is critical as it uses the Alpha Channel (whether from original PNG or color removal)
     left, upper, right, lower = find_bounding_box(img_rgba)
     object_cropped = img_rgba.crop((left, upper, right, lower))
     object_width = object_cropped.width
     object_height = object_cropped.height
 
     if object_width == 0 or object_height == 0:
-        st.warning("Object area is zero after background removal. Outputting original image on canvas.")
+        st.warning("Object area is zero after background processing. Outputting original image on canvas.")
         object_cropped = img_rgba
 
     # 3. Calculate Target Size and Resize (Zoom)
@@ -239,6 +253,7 @@ tool_selection = st.sidebar.radio(
 if tool_selection == "1. Background Remover / Canvas":
     st.header("🖼️ Background Remover / Canvas Processor")
     st.write("Upload an image to remove its background (based on top-left color) and place it on a new canvas.")
+    st.markdown("💡 **Pro Tip:** PNG files (with transparent backgrounds) skip the background removal step automatically.")
 
     uploaded_file = st.file_uploader("Upload Image (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
@@ -250,7 +265,9 @@ if tool_selection == "1. Background Remover / Canvas":
         
     with st.sidebar.expander("BG Removal Settings"):
         tolerance = st.slider("BG Removal Tolerance (0-200)", 0, 200, 30)
-        skip_bg_removal = st.checkbox("Skip Background Removal", value=False)
+        # Added helpful context for skipping the removal process
+        skip_bg_removal = st.checkbox("Skip Color-Based Background Removal", value=False)
+        st.caption("PNG files हमेशा इस स्टेप को स्किप करते हैं।")
     
     if uploaded_file is not None:
         if st.button("Process Image"):
