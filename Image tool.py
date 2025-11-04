@@ -85,6 +85,28 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
     return new_canvas
 
+def remove_background_to_png(image_file, tolerance):
+    
+    img = Image.open(image_file)
+    
+    img_rgba = img.convert("RGBA")
+    img_rgb = img.convert("RGB")
+    pixels_rgba = img_rgba.load()
+    
+    try:
+        # We use the color-based method here for consistency
+        original_bg_color = img_rgb.getpixel((0, 0)) 
+    except IndexError:
+        return img_rgba
+
+    for x in range(img_rgba.width):
+        for y in range(img_rgba.height):
+            current_pixel_rgb = img_rgb.getpixel((x, y))
+            if color_distance(current_pixel_rgb, original_bg_color) < tolerance:
+                pixels_rgba[x, y] = (0, 0, 0, 0) 
+                
+    return img_rgba
+
 def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y, protected_hex_color_1=None, protected_hex_color_2=None):
     
     dummy_original = Image.open(dummy_file).convert("RGBA")
@@ -169,6 +191,7 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
 
 def convert_image_to_bytes(img):
     buf = io.BytesIO()
+    # PNG is a lossless format, which maintains original quality
     img.save(buf, format="PNG")
     byte_im = buf.getvalue()
     return byte_im
@@ -180,7 +203,7 @@ st.write("---")
 
 tool_selection = st.sidebar.radio(
     "Select Tool",
-    ("1. Background Remover / Canvas", "2. Design Mockup Tool")
+    ("1. Background Remover / Canvas", "2. Design Mockup Tool", "3. Dedicated BG Remover (PNG Output)")
 )
 
 if tool_selection == "1. Background Remover / Canvas":
@@ -200,7 +223,6 @@ if tool_selection == "1. Background Remover / Canvas":
             st.session_state['canvas_width_default'] = original_img.width
             st.session_state['canvas_height_default'] = original_img.height
             
-            # Reset defaults if no file is present
             if 'canvas_width_default' not in st.session_state:
                  st.session_state['canvas_width_default'] = 1200
                  st.session_state['canvas_height_default'] = 1200
@@ -245,7 +267,6 @@ if tool_selection == "1. Background Remover / Canvas":
                 col1.image(Image.open(uploaded_file), use_column_width=True)
                 
                 col2.subheader("Processed Canvas Output")
-                # Use output image size for better display accuracy
                 col2.image(output_image, width=output_image.width if output_image else None) 
                 
                 st.download_button(
@@ -313,3 +334,38 @@ elif tool_selection == "2. Design Mockup Tool":
             file_name="mockup_output.png",
             mime="image/png"
         )
+        
+elif tool_selection == "3. Dedicated BG Remover (PNG Output)":
+    st.header("✨ Dedicated Background Remover (PNG Output)")
+    st.write("Upload an image (JPG/PNG). The background will be removed (based on the top-left corner color) and the output will be saved as a high-quality transparent PNG.")
+
+    uploaded_file = st.file_uploader("Upload Image (PNG/JPG)", type=["png", "jpg", "jpeg"], key="bg_remover_dedicated_upload")
+
+    with st.sidebar.expander("Removal Settings"):
+        tolerance = st.slider("BG Removal Tolerance (0-200)", 0, 200, 30, key="bg_remover_dedicated_tolerance")
+    
+    if uploaded_file is not None:
+        if st.button("Remove Background & Convert to PNG"):
+            with st.spinner("Processing..."):
+                output_image = remove_background_to_png(
+                    image_file=uploaded_file,
+                    tolerance=tolerance
+                )
+            
+            if output_image:
+                st.success("Background Removal Complete!")
+                
+                col1, col2 = st.columns(2)
+                col1.subheader("Original Image")
+                col1.image(Image.open(uploaded_file), use_column_width=True)
+                
+                col2.subheader("Transparent PNG Output")
+                col2.image(output_image, use_column_width=True)
+                
+                # The PNG format is lossless, ensuring maximum original quality is maintained.
+                st.download_button(
+                    label="Download Transparent PNG",
+                    data=convert_image_to_bytes(output_image),
+                    file_name="transparent_output.png",
+                    mime="image/png"
+                )
