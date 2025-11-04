@@ -97,13 +97,12 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
     return new_canvas
 
-def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y, protected_hex_color=None):
+def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y, protected_hex_color_1=None, protected_hex_color_2=None):
     """
     Design Mockup logic (from app with background change.py)
     
-    FIX: It isolates the design area and prevents color blending on the design itself.
-    This works best if the dummy image is purely the product (like a blank t-shirt).
-    If the design is baked into the dummy image, the user needs to upload a clean dummy.
+    FIX: Uses two protected colors to create a stronger print protection mask,
+    ensuring internal designs (like Minnie Mouse) retain their original colors.
     """
     
     # 1. Load Images
@@ -121,77 +120,68 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
     tshirt_color_layer = Image.new('RGB', (width, height), (tshirt_r, tshirt_g, tshirt_b))
     
     # Blend the T-shirt color with the original dummy image to retain shadows/folds
-    # This blended image now has the new color but retains texture.
     blended_tshirt_rgb = Image.blend(dummy_original.convert('RGB'), tshirt_color_layer, blend_factor / 100.0)
     
-    # --- NEW LOGIC: Protect Internal Print Color (Refined) ---
+    # --- NEW LOGIC: Multi-Color Internal Print Protection ---
     
     # 3.1. Get the mask for the entire product area (Alpha Channel)
     dummy_alpha = dummy_original.getchannel('A')
+    dummy_rgb = dummy_original.convert('RGB')
     
-    # Initialize the mask that controls where the color change happens (white=change, black=protect)
-    color_change_mask = dummy_alpha.copy() 
-    
-    if protected_hex_color:
-        protected_rgb = hex_to_rgb(protected_hex_color)
+    # Check if at least one protected color is provided
+    if protected_hex_color_1 or protected_hex_color_2:
         
-        # 3.2. Create a mask for the protected color area in the DUMMY IMAGE
-        protected_area_mask = Image.new('L', (width, height), 0)
+        # Initialize the combined protection mask (black=protect)
+        combined_protection_mask_array = np.zeros((height, width), dtype=np.uint8)
         
-        # 3.3. Iterate and mask the area based on the protected color
-        dummy_rgb = dummy_original.convert('RGB')
+        # Define colors and tolerance
+        protected_colors_hex = [protected_hex_color_1, protected_hex_color_2]
+        PROTECTION_TOLERANCE = 25 
+        
+        # 3.2. Iterate and build the protection mask for ALL protected colors
         pixels_dummy = dummy_rgb.load()
-        pixels_mask = protected_area_mask.load()
-        
-        # Use a small tolerance (e.g., 20) for color matching
-        PROTECTION_TOLERANCE = 25 # Reduced tolerance for more precise print detection
         
         for x in range(width):
             for y in range(height):
+                # Ensure the pixel is inside the product mask
+                if dummy_alpha.getpixel((x, y)) == 0:
+                    continue
+
                 current_pixel = pixels_dummy[x, y]
-                # Check if the pixel color is close to the protected color AND it's inside the product
-                # Check against the full product alpha mask to avoid background hits
-                if color_distance(current_pixel, protected_rgb) < PROTECTION_TOLERANCE and dummy_alpha.getpixel((x, y)) > 0:
-                    # If it's the protected color, set the mask pixel to WHITE (255)
-                    pixels_mask[x, y] = 255
+                
+                # Check against both protected colors
+                is_protected = False
+                for hex_color in protected_colors_hex:
+                    if hex_color:
+                        protected_rgb = hex_to_rgb(hex_color)
+                        if color_distance(current_pixel, protected_rgb) < PROTECTION_TOLERANCE:
+                            is_protected = True
+                            break
+                
+                if is_protected:
+                    # If it's close to EITHER protected color, set the mask pixel to WHITE (255)
+                    combined_protection_mask_array[y, x] = 255
         
-        # 3.4. Refine the main color_change_mask: 
-        # The area to be *colored* should be the total product area (dummy_alpha) 
-        # MINUS the protected print area (pixels_mask).
-        # We invert the protected_area_mask to get a 'change' mask, then mask it with the alpha.
+        # Convert NumPy array back to PIL mask image
+        protected_area_mask = Image.fromarray(combined_protection_mask_array, mode='L')
         
-        # Create an inverted mask: White where print IS NOT (i.e., where we want to change color)
-        # And Black where print IS (i.e., where we want to protect)
+        # 3.3. Composite the Original Product (Print) over the Colored Product (Cloth)
+        # Where the mask is WHITE (255), the original color (A) is kept (Print protected).
+        # Where the mask is BLACK (0), the blended color (B) is used (Cloth colored).
         
-        # Note: PIL's point operation is non-trivial for numpy-like boolean ops. 
-        # Easier to convert to NumPy array for subtraction.
-        alpha_array = np.array(dummy_alpha, dtype=np.float32) / 255.0
-        protected_array = np.array(protected_area_mask, dtype=np.float32) / 255.0
-        
-        # Subtraction: (Full Product Mask) - (Protected Print Mask)
-        # This gives a mask for the CLOTH ONLY
-        cloth_only_array = np.maximum(0, alpha_array - protected_array)
-        
-        # Convert back to PIL mask image
-        cloth_only_mask = Image.fromarray((cloth_only_array * 255).astype(np.uint8))
-        
-        # 3.5. Composite the Original Product (Dummy) over the Colored Product using the Print Mask
-        # Where the print is (protected area), we use the original dummy color (A).
-        # Where the cloth is (colored area), we use the blended color (B).
         blended_tshirt_rgb = Image.composite(
-            dummy_rgb,              # A: Original (for print area)
-            blended_tshirt_rgb,     # B: Colored (for cloth area)
-            protected_area_mask     # Mask: White=Original (A), Black=Colored (B)
+            dummy_rgb,              # A: Original colors (to protect print)
+            blended_tshirt_rgb,     # B: Colored layer (the new color)
+            protected_area_mask     # Mask: Controls blending
         )
 
-        # 3.6. Now, use the CLOTH ONLY mask to paste the new color onto the final image.
-        # This mask ensures that blending only happens on the cloth area.
-        final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
+        # 3.4. Paste the final result onto the background
+        final_img.paste(blended_tshirt_rgb, (0, 0), dummy_alpha)
     
     # --- END NEW LOGIC ---
     
     else:
-        # If no protected color is provided, use the simple paste method from before
+        # 3.5. Simple paste if no protected color is provided
         dummy_mask = dummy_original.getchannel('A')
         final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
 
@@ -199,7 +189,6 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
     
     # Check if a separate design file was uploaded (design_file)
     if design_file.getvalue():
-        # The logic below assumes the uploaded design is separate and should keep its color.
         
         # Calculate size and position for the design
         scale = design_scale / 100
@@ -311,9 +300,10 @@ elif tool_selection == "2. Design Mockup Tool":
         blending_factor = st.slider("T-shirt Blending Factor (%)", 10, 100, 70)
         st.markdown("---")
         # NEW INPUT FOR PRINT PROTECTION
-        st.subheader("Internal Print Protection")
-        protected_color = st.color_picker("Color to Protect (Print Color)", "#FFFFFF", key="protected_color")
-        st.caption("यह रंग (जैसे Print का White) बदलने से बचाएगा।")
+        st.subheader("Internal Print Protection (Print ka Rang Surakshit Rakhen)")
+        protected_color_1 = st.color_picker("1st Color to Protect (e.g., White)", "#FFFFFF", key="protected_color_1")
+        protected_color_2 = st.color_picker("2nd Color to Protect (e.g., Black/Red)", "#000000", key="protected_color_2")
+        st.caption("Print के दो मुख्य रंगों को चुनें (जैसे सफ़ेद और काला आउटलाइन) ताकि वे बदलने से बच जाएं।")
         
     with st.sidebar.expander("Design Placement Settings"):
         design_scale = st.slider("Design Size (%)", 10, 100, 50)
@@ -336,7 +326,8 @@ elif tool_selection == "2. Design Mockup Tool":
                         design_scale=design_scale,
                         offset_x=offset_x,
                         offset_y=offset_y,
-                        protected_hex_color=protected_color
+                        protected_hex_color_1=protected_color_1,
+                        protected_hex_color_2=protected_color_2
                     )
                     st.session_state['mockup_output'] = output_image
                     st.success("Mockup Generated!")
