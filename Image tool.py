@@ -124,59 +124,76 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
     # This blended image now has the new color but retains texture.
     blended_tshirt_rgb = Image.blend(dummy_original.convert('RGB'), tshirt_color_layer, blend_factor / 100.0)
     
-    # --- NEW LOGIC: Protect Internal Print Color ---
-    final_product_layer = blended_tshirt_rgb.copy().convert('RGBA')
+    # --- NEW LOGIC: Protect Internal Print Color (Refined) ---
+    
+    # 3.1. Get the mask for the entire product area (Alpha Channel)
+    dummy_alpha = dummy_original.getchannel('A')
+    
+    # Initialize the mask that controls where the color change happens (white=change, black=protect)
+    color_change_mask = dummy_alpha.copy() 
     
     if protected_hex_color:
         protected_rgb = hex_to_rgb(protected_hex_color)
         
-        # 3.1. Create a mask for the protected color area in the DUMMY IMAGE
+        # 3.2. Create a mask for the protected color area in the DUMMY IMAGE
         protected_area_mask = Image.new('L', (width, height), 0)
         
-        # 3.2. Iterate and mask the area based on the protected color
+        # 3.3. Iterate and mask the area based on the protected color
         dummy_rgb = dummy_original.convert('RGB')
         pixels_dummy = dummy_rgb.load()
         pixels_mask = protected_area_mask.load()
         
-        # Use a small tolerance (e.g., 20) for color matching, assuming the print color is close to pure white/black
-        PROTECTION_TOLERANCE = 20
+        # Use a small tolerance (e.g., 20) for color matching
+        PROTECTION_TOLERANCE = 35 # Increased tolerance for better detection
         
         for x in range(width):
             for y in range(height):
                 current_pixel = pixels_dummy[x, y]
-                # Check if the pixel color is close to the protected color
-                if color_distance(current_pixel, protected_rgb) < PROTECTION_TOLERANCE:
-                    # If it's close, set the mask pixel to WHITE (255)
+                # Check if the pixel color is close to the protected color AND it's inside the product
+                # Check against the full product alpha mask to avoid background hits
+                if color_distance(current_pixel, protected_rgb) < PROTECTION_TOLERANCE and dummy_alpha.getpixel((x, y)) > 0:
+                    # If it's the protected color, set the mask pixel to WHITE (255)
                     pixels_mask[x, y] = 255
-                
-        # 3.3. Use the mask to restore the original colors in the blended layer
-        # Restore original RGB values from the dummy image to the areas where the mask is white (255)
-        # We need the original, uncolored version of the product for the protected area.
         
-        # Create a combined layer: blended product + original print
-        # Image.composite(Image A (Original Print), Image B (Colored Product), Mask (Protected Area))
+        # 3.4. Refine the main color_change_mask: 
+        # The area to be *colored* should be the total product area (dummy_alpha) 
+        # MINUS the protected print area (pixels_mask).
+        # We invert the protected_area_mask to get a 'change' mask, then mask it with the alpha.
         
-        # Ensure the alpha channel is taken into account for the product mask
-        dummy_alpha = dummy_original.getchannel('A')
+        # Create an inverted mask: White where print IS NOT (i.e., where we want to change color)
+        # And Black where print IS (i.e., where we want to protect)
         
-        # Use a full white mask based on the product shape (alpha channel)
-        full_product_mask = Image.new('L', (width, height), 0)
-        full_product_mask.paste(dummy_alpha, (0, 0))
+        # Note: PIL's point operation is non-trivial for numpy-like boolean ops. 
+        # Easier to convert to NumPy array for subtraction.
+        alpha_array = np.array(dummy_alpha, dtype=np.float32) / 255.0
+        protected_array = np.array(protected_area_mask, dtype=np.float32) / 255.0
         
-        # Combine the protected area mask with the full product mask
-        # We only care about protecting areas *inside* the product
-        final_protection_mask = ImageChops.darker(protected_area_mask, full_product_mask)
+        # Subtraction: (Full Product Mask) - (Protected Print Mask)
+        # This gives a mask for the CLOTH ONLY
+        cloth_only_array = np.maximum(0, alpha_array - protected_array)
         
-        # Composite the original colors back into the final product layer using the protection mask
-        # A: Original product (print) area, B: Colored product area, Mask: Protected area
-        blended_tshirt_rgb = Image.composite(dummy_rgb, blended_tshirt_rgb, final_protection_mask)
+        # Convert back to PIL mask image
+        cloth_only_mask = Image.fromarray((cloth_only_array * 255).astype(np.uint8))
+        
+        # 3.5. Composite the Original Product (Dummy) over the Colored Product using the Print Mask
+        # Where the print is (protected area), we use the original dummy color (A).
+        # Where the cloth is (colored area), we use the blended color (B).
+        blended_tshirt_rgb = Image.composite(
+            dummy_rgb,              # A: Original (for print area)
+            blended_tshirt_rgb,     # B: Colored (for cloth area)
+            protected_area_mask     # Mask: White=Original (A), Black=Colored (B)
+        )
+
+        # 3.6. Now, use the CLOTH ONLY mask to paste the new color onto the final image.
+        # This mask ensures that blending only happens on the cloth area.
+        final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
     
     # --- END NEW LOGIC ---
     
-    # Paste the colored and blended t-shirt onto the final image
-    # Use the original dummy's alpha channel to crop the t-shirt shape
-    dummy_mask = dummy_original.getchannel('A')
-    final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
+    else:
+        # If no protected color is provided, use the simple paste method from before
+        dummy_mask = dummy_original.getchannel('A')
+        final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
 
     # 4. Place and Blend Design (This logic is for when a design is uploaded separately)
     
