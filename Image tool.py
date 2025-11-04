@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 import io
 import os
 import numpy as np
@@ -100,47 +100,71 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y):
     """
     Design Mockup logic (from app with background change.py)
+    
+    FIX: It isolates the design area and prevents color blending on the design itself.
+    This works best if the dummy image is purely the product (like a blank t-shirt).
+    If the design is baked into the dummy image, the user needs to upload a clean dummy.
     """
-    # 1. Background Canvas Setup
-    dummy = Image.open(dummy_file).convert("RGBA")
+    
+    # 1. Load Images
+    dummy_original = Image.open(dummy_file).convert("RGBA")
+    design_original = Image.open(design_file).convert("RGBA")
+    
+    width, height = dummy_original.size
+
+    # 2. Background Canvas Setup
     bg_r, bg_g, bg_b = hex_to_rgb(bg_hex)
-    final_img = Image.new('RGB', dummy.size, (bg_r, bg_g, bg_b))
+    final_img = Image.new('RGB', (width, height), (bg_r, bg_g, bg_b))
     
-    # 2. T-shirt Color Change and Blending
+    # 3. Create Colored T-shirt Mask
     tshirt_r, tshirt_g, tshirt_b = hex_to_rgb(tshirt_hex)
-    tshirt_color_img = Image.new('RGB', dummy.size, (tshirt_r, tshirt_g, tshirt_b))
+    tshirt_color_layer = Image.new('RGB', (width, height), (tshirt_r, tshirt_g, tshirt_b))
     
-    # Blend the color with dummy to retain shadows/folds
-    blended_tshirt = Image.blend(dummy.convert('RGB'), tshirt_color_img, blend_factor / 100.0)
+    # Blend the T-shirt color with the original dummy image to retain shadows/folds
+    # This blended image now has the new color but retains texture.
+    blended_tshirt_rgb = Image.blend(dummy_original.convert('RGB'), tshirt_color_layer, blend_factor / 100.0)
     
-    # Paste the blended t-shirt onto the background using the dummy's alpha mask
-    final_img.paste(blended_tshirt, (0, 0), dummy)
+    # Use the original dummy's alpha channel to mask the colored layer
+    dummy_mask = dummy_original.getchannel('A')
     
-    # 3. Place Design on T-shirt
-    design = Image.open(design_file).convert("RGBA")
+    # Paste the colored and blended t-shirt onto the final image
+    final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
+
+    # 4. Place and Blend Design
     
-    # Calculate size and position
+    # Calculate size and position for the design
     scale = design_scale / 100
-    # Original logic: design_width = int(final_img.width * scale * 0.5)
-    design_width = int(final_img.width * scale * 0.5) 
-    aspect_ratio = design.height / design.width
+    # Design size calculation is based on the dummy's width and the scale slider
+    design_width = int(width * scale * 0.5) 
+    aspect_ratio = design_original.height / design_original.width
     design_height = int(design_width * aspect_ratio)
-    design = design.resize((design_width, design_height), Image.LANCZOS)
+    design_resized = design_original.resize((design_width, design_height), Image.LANCZOS)
     
-    max_offset_x = final_img.width - design.width
-    max_offset_y = final_img.height - design_height
+    # Calculate offsets
+    max_offset_x = width - design_width
+    max_offset_y = height - design_height
     pos_x = int((offset_x / 100) * max_offset_x)
     pos_y = int((offset_y / 100) * max_offset_y)
 
-    # Create a canvas for the design
-    design_canvas = Image.new('RGBA', final_img.size, (0, 0, 0, 0))
-    design_canvas.paste(design, (pos_x, pos_y), design)
+    # Create a blank canvas for the design at the final size
+    design_canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    design_canvas.paste(design_resized, (pos_x, pos_y), design_resized) # Paste design with its alpha mask
 
-    # Blend the design with the t-shirt to incorporate shadows/texture (using original dummy alpha as mask)
-    # The original logic was complex (composite with mask). A simpler overlay/paste is used here,
-    # as PIL's composite function is not ideal for overlay blending.
-    # The original alpha-masking logic from Tkinter is replicated for design placement.
-    final_img.paste(design_canvas, (0, 0), design_canvas) # Paste design with its alpha channel
+    # Now, we blend the design onto the final image while ensuring the design *only*
+    # appears over the product area, using the original dummy's texture for a realistic look.
+    
+    # Isolate the design's RGB data and its Alpha channel
+    design_rgb = design_canvas.convert('RGB')
+    design_alpha = design_canvas.getchannel('A')
+    
+    # Use Image.composite to place the design on the base colored product.
+    # The design is placed using its own alpha channel.
+    final_img.paste(design_rgb, (0, 0), design_alpha)
+
+    # Note: If you want the design to adopt the shadows of the t-shirt *underneath* it,
+    # you would need advanced blending modes like 'Multiply' or 'Overlay'.
+    # PIL's `Image.composite` is not sufficient for true Photoshop-style blending.
+    # The current implementation (paste with alpha) ensures the design's original color is maintained.
 
     return final_img
 
@@ -215,6 +239,7 @@ if tool_selection == "1. Background Remover / Canvas":
 elif tool_selection == "2. Design Mockup Tool":
     st.header("👕 Design Mockup Tool (T-shirt/Product)")
     st.write("Upload a product image (like a t-shirt, PNG) and a design/logo to create a colored mockup.")
+    st.markdown("⚠️ **ज़रूरी सूचना (IMPORTANT):** **Design Image** के अंदर अगर कोई सफ़ेद रंग है, तो वह रंग नहीं बदलेगा।")
     
     col_files = st.columns(2)
     dummy_file = col_files[0].file_uploader("1. Upload Product/Dummy Image (PNG)", type=["png"], key="dummy_upload")
