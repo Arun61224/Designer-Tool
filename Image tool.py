@@ -189,10 +189,33 @@ if tool_selection == "1. Background Remover / Canvas":
     st.markdown("💡 **Pro Tip:** PNG files (with transparent backgrounds) skip the background removal step automatically.")
 
     uploaded_file = st.file_uploader("Upload Image (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    
+    # Logic to set default canvas size to original image dimensions for quality
+    if uploaded_file is not None:
+        if 'original_width' not in st.session_state or st.session_state.get('last_file_name') != uploaded_file.name:
+            original_img = Image.open(uploaded_file)
+            st.session_state['original_width'] = original_img.width
+            st.session_state['original_height'] = original_img.height
+            st.session_state['last_file_name'] = uploaded_file.name
+            st.session_state['canvas_width_default'] = original_img.width
+            st.session_state['canvas_height_default'] = original_img.height
+            
+            # Reset defaults if no file is present
+            if 'canvas_width_default' not in st.session_state:
+                 st.session_state['canvas_width_default'] = 1200
+                 st.session_state['canvas_height_default'] = 1200
+        
+        default_w = st.session_state.get('canvas_width_default', 1200)
+        default_h = st.session_state.get('canvas_height_default', 1200)
+        
+        st.markdown(f"**Original Resolution:** {default_w}x{default_h} px")
+    else:
+        default_w = 1200
+        default_h = 1200
 
     with st.sidebar.expander("Canvas Settings"):
-        canvas_width = st.number_input("Canvas Width (px)", value=1200, min_value=100)
-        canvas_height = st.number_input("Canvas Height (px)", value=1200, min_value=100)
+        canvas_width = st.number_input("Canvas Width (px)", value=default_w, min_value=100)
+        canvas_height = st.number_input("Canvas Height (px)", value=default_h, min_value=100)
         occupancy = st.slider("Object Occupancy (%)", 50, 100, 95)
         bg_color = st.color_picker("Final Background Color", "#FFFFFF")
         
@@ -222,7 +245,8 @@ if tool_selection == "1. Background Remover / Canvas":
                 col1.image(Image.open(uploaded_file), use_column_width=True)
                 
                 col2.subheader("Processed Canvas Output")
-                col2.image(output_image, use_column_width=True)
+                # Use output image size for better display accuracy
+                col2.image(output_image, width=output_image.width if output_image else None) 
                 
                 st.download_button(
                     label="Download Processed PNG",
