@@ -44,11 +44,10 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
             st.error("Image size is too small for background detection.")
             return None
 
-        for x in range(img_rgba.width):
-            for y in range(img_rgba.height):
-                current_pixel_rgb = img_rgb.getpixel((x, y))
-                if color_distance(current_pixel_rgb, original_bg_color) < tolerance:
-                    pixels_rgba[x, y] = (0, 0, 0, 0) 
+        # Call the dedicated BG removal logic for this canvas version
+        img_rgba = _recursive_bg_removal(img_rgb, img_rgba, original_bg_color, tolerance) 
+        pixels_rgba = img_rgba.load()
+
 
     left, upper, right, lower = find_bounding_box(img_rgba)
     object_cropped = img_rgba.crop((left, upper, right, lower))
@@ -85,27 +84,58 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
     return new_canvas
 
+# New Helper Function for Recursive Background Removal (Flood Fill)
+def _recursive_bg_removal(img_rgb, img_rgba, bg_color, tolerance):
+    
+    width, height = img_rgba.size
+    pixels_rgba = img_rgba.load()
+    pixels_rgb = img_rgb.load()
+    
+    # Use a set to store coordinates of pixels to check (Queue for BFS/Flood Fill)
+    queue = [(0, 0)] # Start at top-left corner
+    visited = set([(0, 0)])
+
+    # Neighbors to check: left, right, up, down
+    neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+
+    while queue:
+        x, y = queue.pop(0)
+
+        # Check if the current pixel is close to the background color
+        if color_distance(pixels_rgb[x, y], bg_color) < tolerance:
+            # Make the current pixel transparent
+            pixels_rgba[x, y] = (0, 0, 0, 0)
+            
+            # Check neighbors
+            for dx, dy in neighbors:
+                nx, ny = x + dx, y + dy
+                
+                # Check boundaries and if already visited
+                if 0 <= nx < width and 0 <= ny < height and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    
+                    # Only add to queue if the neighbor is also a background-like color
+                    if color_distance(pixels_rgb[nx, ny], bg_color) < tolerance:
+                         queue.append((nx, ny))
+                         
+    return img_rgba
+
+
 def remove_background_to_png(image_file, tolerance):
     
     img = Image.open(image_file)
     
     img_rgba = img.convert("RGBA")
     img_rgb = img.convert("RGB")
-    pixels_rgba = img_rgba.load()
     
     try:
-        # We use the color-based method here for consistency
         original_bg_color = img_rgb.getpixel((0, 0)) 
     except IndexError:
         return img_rgba
 
-    for x in range(img_rgba.width):
-        for y in range(img_rgba.height):
-            current_pixel_rgb = img_rgb.getpixel((x, y))
-            if color_distance(current_pixel_rgb, original_bg_color) < tolerance:
-                pixels_rgba[x, y] = (0, 0, 0, 0) 
-                
-    return img_rgba
+    # Use the new recursive function for better edge detection
+    return _recursive_bg_removal(img_rgb, img_rgba, original_bg_color, tolerance)
+
 
 def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y, protected_hex_color_1=None, protected_hex_color_2=None):
     
