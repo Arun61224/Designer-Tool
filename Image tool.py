@@ -97,7 +97,7 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
     return new_canvas
 
-def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y):
+def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, design_scale, offset_x, offset_y, protected_hex_color=None):
     """
     Design Mockup logic (from app with background change.py)
     
@@ -124,47 +124,88 @@ def generate_mockup(dummy_file, design_file, bg_hex, tshirt_hex, blend_factor, d
     # This blended image now has the new color but retains texture.
     blended_tshirt_rgb = Image.blend(dummy_original.convert('RGB'), tshirt_color_layer, blend_factor / 100.0)
     
-    # Use the original dummy's alpha channel to mask the colored layer
-    dummy_mask = dummy_original.getchannel('A')
+    # --- NEW LOGIC: Protect Internal Print Color ---
+    final_product_layer = blended_tshirt_rgb.copy().convert('RGBA')
+    
+    if protected_hex_color:
+        protected_rgb = hex_to_rgb(protected_hex_color)
+        
+        # 3.1. Create a mask for the protected color area in the DUMMY IMAGE
+        protected_area_mask = Image.new('L', (width, height), 0)
+        
+        # 3.2. Iterate and mask the area based on the protected color
+        dummy_rgb = dummy_original.convert('RGB')
+        pixels_dummy = dummy_rgb.load()
+        pixels_mask = protected_area_mask.load()
+        
+        # Use a small tolerance (e.g., 20) for color matching, assuming the print color is close to pure white/black
+        PROTECTION_TOLERANCE = 20
+        
+        for x in range(width):
+            for y in range(height):
+                current_pixel = pixels_dummy[x, y]
+                # Check if the pixel color is close to the protected color
+                if color_distance(current_pixel, protected_rgb) < PROTECTION_TOLERANCE:
+                    # If it's close, set the mask pixel to WHITE (255)
+                    pixels_mask[x, y] = 255
+                
+        # 3.3. Use the mask to restore the original colors in the blended layer
+        # Restore original RGB values from the dummy image to the areas where the mask is white (255)
+        # We need the original, uncolored version of the product for the protected area.
+        
+        # Create a combined layer: blended product + original print
+        # Image.composite(Image A (Original Print), Image B (Colored Product), Mask (Protected Area))
+        
+        # Ensure the alpha channel is taken into account for the product mask
+        dummy_alpha = dummy_original.getchannel('A')
+        
+        # Use a full white mask based on the product shape (alpha channel)
+        full_product_mask = Image.new('L', (width, height), 0)
+        full_product_mask.paste(dummy_alpha, (0, 0))
+        
+        # Combine the protected area mask with the full product mask
+        # We only care about protecting areas *inside* the product
+        final_protection_mask = ImageChops.darker(protected_area_mask, full_product_mask)
+        
+        # Composite the original colors back into the final product layer using the protection mask
+        # A: Original product (print) area, B: Colored product area, Mask: Protected area
+        blended_tshirt_rgb = Image.composite(dummy_rgb, blended_tshirt_rgb, final_protection_mask)
+    
+    # --- END NEW LOGIC ---
     
     # Paste the colored and blended t-shirt onto the final image
+    # Use the original dummy's alpha channel to crop the t-shirt shape
+    dummy_mask = dummy_original.getchannel('A')
     final_img.paste(blended_tshirt_rgb, (0, 0), dummy_mask)
 
-    # 4. Place and Blend Design
+    # 4. Place and Blend Design (This logic is for when a design is uploaded separately)
     
-    # Calculate size and position for the design
-    scale = design_scale / 100
-    # Design size calculation is based on the dummy's width and the scale slider
-    design_width = int(width * scale * 0.5) 
-    aspect_ratio = design_original.height / design_original.width
-    design_height = int(design_width * aspect_ratio)
-    design_resized = design_original.resize((design_width, design_height), Image.LANCZOS)
-    
-    # Calculate offsets
-    max_offset_x = width - design_width
-    max_offset_y = height - design_height
-    pos_x = int((offset_x / 100) * max_offset_x)
-    pos_y = int((offset_y / 100) * max_offset_y)
+    # Check if a separate design file was uploaded (design_file)
+    if design_file.getvalue():
+        # The logic below assumes the uploaded design is separate and should keep its color.
+        
+        # Calculate size and position for the design
+        scale = design_scale / 100
+        design_width = int(width * scale * 0.5) 
+        aspect_ratio = design_original.height / design_original.width
+        design_height = int(design_width * aspect_ratio)
+        design_resized = design_original.resize((design_width, design_height), Image.LANCZOS)
+        
+        # Calculate offsets
+        max_offset_x = width - design_width
+        max_offset_y = height - design_height
+        pos_x = int((offset_x / 100) * max_offset_x)
+        pos_y = int((offset_y / 100) * max_offset_y)
 
-    # Create a blank canvas for the design at the final size
-    design_canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    design_canvas.paste(design_resized, (pos_x, pos_y), design_resized) # Paste design with its alpha mask
+        # Create a blank canvas for the design at the final size
+        design_canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        design_canvas.paste(design_resized, (pos_x, pos_y), design_resized) 
 
-    # Now, we blend the design onto the final image while ensuring the design *only*
-    # appears over the product area, using the original dummy's texture for a realistic look.
-    
-    # Isolate the design's RGB data and its Alpha channel
-    design_rgb = design_canvas.convert('RGB')
-    design_alpha = design_canvas.getchannel('A')
-    
-    # Use Image.composite to place the design on the base colored product.
-    # The design is placed using its own alpha channel.
-    final_img.paste(design_rgb, (0, 0), design_alpha)
-
-    # Note: If you want the design to adopt the shadows of the t-shirt *underneath* it,
-    # you would need advanced blending modes like 'Multiply' or 'Overlay'.
-    # PIL's `Image.composite` is not sufficient for true Photoshop-style blending.
-    # The current implementation (paste with alpha) ensures the design's original color is maintained.
+        design_rgb = design_canvas.convert('RGB')
+        design_alpha = design_canvas.getchannel('A')
+        
+        # Paste the design onto the mockup image
+        final_img.paste(design_rgb, (0, 0), design_alpha)
 
     return final_img
 
@@ -242,33 +283,43 @@ elif tool_selection == "2. Design Mockup Tool":
     st.markdown("⚠️ **ज़रूरी सूचना (IMPORTANT):** **Design Image** के अंदर अगर कोई सफ़ेद रंग है, तो वह रंग नहीं बदलेगा।")
     
     col_files = st.columns(2)
-    dummy_file = col_files[0].file_uploader("1. Upload Product/Dummy Image (PNG)", type=["png"], key="dummy_upload")
-    design_file = col_files[1].file_uploader("2. Upload Design/Logo Image (PNG)", type=["png"], key="design_upload")
+    # NOTE: Design file is now optional for cases where the design is part of the dummy.
+    dummy_file = col_files[0].file_uploader("1. Upload Product/Dummy Image (PNG/JPG)", type=["png", "jpg", "jpeg"], key="dummy_upload")
+    design_file = col_files[1].file_uploader("2. Upload Separate Design/Logo (PNG, Optional)", type=["png"], key="design_upload")
 
     # Parameters in a sidebar for a clean look
     with st.sidebar.expander("Color & Blending Settings"):
         bg_color = st.color_picker("Background Color", "#FFFFFF", key="mockup_bg")
-        tshirt_color = st.color_picker("T-shirt Color", "#0000FF", key="mockup_tshirt")
+        tshirt_color = st.color_picker("Product Color Change To", "#0000FF", key="mockup_tshirt")
         blending_factor = st.slider("T-shirt Blending Factor (%)", 10, 100, 70)
+        st.markdown("---")
+        # NEW INPUT FOR PRINT PROTECTION
+        st.subheader("Internal Print Protection")
+        protected_color = st.color_picker("Color to Protect (Print Color)", "#FFFFFF", key="protected_color")
+        st.caption("यह रंग (जैसे Print का White) बदलने से बचाएगा।")
         
     with st.sidebar.expander("Design Placement Settings"):
         design_scale = st.slider("Design Size (%)", 10, 100, 50)
         offset_x = st.slider("Horizontal Offset (%)", 0, 100, 50)
         offset_y = st.slider("Vertical Offset (%)", 0, 100, 50)
 
-    if dummy_file is not None and design_file is not None:
+    if dummy_file is not None: # Design file is now optional
         if st.button("Generate Mockup"):
             with st.spinner("Generating Mockup..."):
                 try:
+                    # Check if the optional design file exists
+                    design_input = design_file if design_file else io.BytesIO(b'')
+                    
                     output_image = generate_mockup(
                         dummy_file=dummy_file, 
-                        design_file=design_file, 
+                        design_file=design_input, # Pass an empty BytesIO if no file is uploaded
                         bg_hex=bg_color, 
                         tshirt_hex=tshirt_color, 
                         blend_factor=blending_factor,
                         design_scale=design_scale,
                         offset_x=offset_x,
-                        offset_y=offset_y
+                        offset_y=offset_y,
+                        protected_hex_color=protected_color
                     )
                     st.session_state['mockup_output'] = output_image
                     st.success("Mockup Generated!")
