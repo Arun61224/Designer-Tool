@@ -37,7 +37,7 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
     
     if should_run_bg_removal:
         img_rgb = img.convert("RGB")
-        pixels_rgba = img_rgba.load()
+        
         try:
             original_bg_color = img_rgb.getpixel((0, 0)) 
         except IndexError:
@@ -46,7 +46,6 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
         # Call the dedicated BG removal logic for this canvas version
         img_rgba = _recursive_bg_removal(img_rgb, img_rgba, original_bg_color, tolerance) 
-        pixels_rgba = img_rgba.load()
 
 
     left, upper, right, lower = find_bounding_box(img_rgba)
@@ -84,39 +83,74 @@ def process_and_place_on_canvas(image_file, final_bg_color, tolerance, new_width
 
     return new_canvas
 
-# New Helper Function for Recursive Background Removal (Flood Fill)
+# Updated Helper Function for Recursive Background Removal (Flood Fill + Edge Refinement)
 def _recursive_bg_removal(img_rgb, img_rgba, bg_color, tolerance):
     
     width, height = img_rgba.size
     pixels_rgba = img_rgba.load()
     pixels_rgb = img_rgb.load()
     
-    # Use a set to store coordinates of pixels to check (Queue for BFS/Flood Fill)
-    queue = [(0, 0)] # Start at top-left corner
+    # --- Step 1: Initial Flood Fill (as before) ---
+    queue = [(0, 0)] 
     visited = set([(0, 0)])
-
-    # Neighbors to check: left, right, up, down
     neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0)]
 
     while queue:
         x, y = queue.pop(0)
 
-        # Check if the current pixel is close to the background color
         if color_distance(pixels_rgb[x, y], bg_color) < tolerance:
-            # Make the current pixel transparent
             pixels_rgba[x, y] = (0, 0, 0, 0)
             
-            # Check neighbors
             for dx, dy in neighbors:
                 nx, ny = x + dx, y + dy
                 
-                # Check boundaries and if already visited
                 if 0 <= nx < width and 0 <= ny < height and (nx, ny) not in visited:
                     visited.add((nx, ny))
                     
-                    # Only add to queue if the neighbor is also a background-like color
                     if color_distance(pixels_rgb[nx, ny], bg_color) < tolerance:
                          queue.append((nx, ny))
+    
+    # --- Step 2: Edge Refinement (Erosion/Fading) ---
+    # We iterate over the image and fade the alpha channel near the boundary of the object
+    
+    # Create a clean alpha channel mask
+    alpha_data = np.array(img_rgba.getchannel('A'), dtype=np.float32)
+    
+    # Define a small radius for edge refinement (e.g., 2 pixels)
+    refinement_radius = 2 
+    
+    for x in range(width):
+        for y in range(height):
+            # If the pixel is already transparent, skip
+            if alpha_data[y, x] == 0:
+                continue
+
+            # Check neighbors to see if this pixel is an edge pixel
+            is_edge = False
+            for dx in range(-refinement_radius, refinement_radius + 1):
+                for dy in range(-refinement_radius, refinement_radius + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                        
+                    nx, ny = x + dx, y + dy
+                    
+                    if 0 <= nx < width and 0 <= ny < height:
+                        neighbor_rgb = pixels_rgb[nx, ny]
+                        
+                        # Check if a neighbor is part of the original background color area
+                        if color_distance(neighbor_rgb, bg_color) < tolerance:
+                            is_edge = True
+                            break
+                if is_edge:
+                    break
+            
+            if is_edge:
+                # Fade the alpha channel of this edge pixel slightly
+                # This helps smooth the transition and removes lingering halo pixels
+                alpha_data[y, x] *= 0.95 # Reduce opacity slightly (adjust this factor if needed)
+                
+    # Reintegrate the refined alpha channel
+    img_rgba.putalpha(Image.fromarray(alpha_data.astype(np.uint8)))
                          
     return img_rgba
 
